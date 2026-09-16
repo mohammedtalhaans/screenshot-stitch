@@ -1,0 +1,187 @@
+import { test, expect } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
+import { screenshots, upload, waitForReview, noPageOverflow } from './fixtures';
+// Every test runs against the production dist, including on a GitHub project prefix.
+// OCR is real except in the explicitly named failure/cancellation tests.
+test('landing: local source archive, keyboard dialog, responsive shell', async ({ page }, testInfo) => {
+    await page.goto('/screenshot-stitch/');
+    await expect(page.getByRole('button', { name: 'Upload screenshots', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: /Try the demo/ })).toBeVisible();
+    const source = page.getByRole('link', { name: /View source/ });
+    await expect(source).toHaveAttribute('href', /github\.com\/|source\/screenshot-stitch-source\.zip$/);
+    await noPageOverflow(page);
+    await page.getByRole('button', { name: 'Our privacy promise' }).click();
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await expect(page.getByRole('dialog')).toContainText('no upload endpoint');
+    await page.keyboard.press('Tab');
+    expect(await page.getByRole('dialog').evaluate(dialog => dialog.contains(document.activeElement))).toBe(true);
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog')).toBeHidden();
+    await testInfo.attach('landing', { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
+});
+test('upload: validation, remove, buttons and keyboard reorder', async ({ page }) => {
+    await page.goto('/');
+    const inputs = await screenshots(page);
+    await page.getByLabel('Upload screenshots', { exact: true }).setInputFiles([
+        { name: 'not-an-image.png', mimeType: 'image/png', buffer: Buffer.from('<svg/>') }, ...inputs,
+    ]);
+    await expect(page.locator('.screenshot-item')).toHaveCount(2);
+    await expect(page.locator('.toast-stack')).toContainText(/not-an-image/);
+    await page.getByRole('button', { name: 'Move screenshot 2 up', exact: true }).click();
+    await expect(page.locator('.screenshot-info strong').first()).toHaveText('screenshot-2.png');
+    await page.getByRole('button', { name: 'Drag screenshot 1 to reorder, or use arrow keys' }).focus();
+    await page.keyboard.press('ArrowDown');
+    await expect(page.locator('.screenshot-info strong').first()).toHaveText('screenshot-1.png');
+    await noPageOverflow(page);
+    await page.getByRole('button', { name: 'Remove screenshot-2.png', exact: true }).click();
+    await expect(page.locator('.screenshot-item')).toHaveCount(1);
+    await expect(page.getByRole('button', { name: 'Scan & protect' })).toBeEnabled();
+});
+test('real OCR → review → edit → flattened PNG, with no outbound user data', async ({ page, context }, testInfo) => {
+    const network: {
+        url: string;
+        method: string;
+    }[] = [], workers: string[] = [], errors: string[] = [];
+    context.on('request', request => { network.push({ url: request.url(), method: request.method() }); });
+    page.on('worker', worker => workers.push(worker.url()));
+    page.on('pageerror', error => errors.push(error.message));
+    await page.goto('/screenshot-stitch/');
+    await upload(page);
+    await page.getByRole('switch', { name: 'Auto-crop repeated headers and footers' }).uncheck();
+    await page.getByRole('button', { name: 'Stitch & protect' }).click();
+    await waitForReview(page);
+    await expect(page.locator('.detection-select strong').filter({ hasText: 'Email address' }).first()).toBeVisible();
+    await expect(page.locator('.original-image')).toHaveJSProperty('naturalWidth', 720);
+    await expect(page.locator('.original-image')).toHaveJSProperty('naturalHeight', 1380);
+    await noPageOverflow(page);
+    await testInfo.attach('review', { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
+    // The comparison range is keyboard-operable, and adding a mask exits comparison.
+    await page.getByRole('button', { name: 'Compare', exact: true }).click();
+    const range = page.getByRole('slider', { name: /Compare original/ });
+    await range.focus();
+    await range.press('Home');
+    await expect(range).toHaveValue('0');
+    const before = await page.locator('.redaction-mask').count();
+    await page.getByRole('button', { name: /Add a manual redaction/ }).click();
+    await expect(page.getByRole('button', { name: 'Compare', exact: true })).toHaveAttribute('aria-pressed', 'false');
+    await page.locator('.image-stage').click({ position: { x: 18, y: 18 } });
+    await expect(page.locator('.redaction-mask')).toHaveCount(before + 1);
+    await page.getByRole('button', { name: 'Precise position & size' }).click();
+    await page.getByRole('spinbutton', { name: 'Mask x', exact: true }).fill('22');
+    await page.getByRole('spinbutton', { name: 'Mask width', exact: true }).fill('160');
+    await expect(page.getByRole('spinbutton', { name: 'Mask width', exact: true })).toHaveValue('160');
+    await page.getByRole('spinbutton', { name: 'Mask width', exact: true }).press('Tab');
+    // Real pointer capture: move and resize, then inspect resulting image-space geometry.
+    const selectedMask = page.locator('.redaction-mask.is-selected');
+    await selectedMask.scrollIntoViewIfNeeded();
+    const box = await selectedMask.boundingBox();
+    expect(box).toBeTruthy();
+    const xBefore = Number(await page.getByRole('spinbutton', { name: 'Mask x', exact: true }).inputValue());
+    await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box!.x + box!.width / 2 + 12, box!.y + box!.height / 2 + 8, { steps: 4 });
+    await page.mouse.up();
+    expect(Number(await page.getByRole('spinbutton', { name: 'Mask x', exact: true }).inputValue())).toBeGreaterThan(xBefore);
+    const handle = await selectedMask.locator('.resize-handle.se').boundingBox();
+    expect(handle).toBeTruthy();
+    const widthBefore = Number(await page.getByRole('spinbutton', { name: 'Mask width', exact: true }).inputValue());
+    await page.mouse.move(handle!.x + handle!.width / 2, handle!.y + handle!.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(handle!.x + handle!.width / 2 + 10, handle!.y + handle!.height / 2 + 6, { steps: 4 });
+    await page.mouse.up();
+    expect(Number(await page.getByRole('spinbutton', { name: 'Mask width', exact: true }).inputValue())).toBeGreaterThan(widthBefore);
+    await page.getByRole('button', { name: 'Blur', exact: true }).click();
+    await expect(page.locator('.style-warning')).toContainText('reveal information');
+    await page.getByRole('button', { name: 'Solid', exact: true }).click();
+    await page.getByRole('button', { name: 'Remove selected redaction' }).click();
+    await expect(page.locator('.redaction-mask')).toHaveCount(before);
+    await page.getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect(page.locator('.redaction-mask')).toHaveCount(before + 1);
+    await page.getByRole('button', { name: 'Redo', exact: true }).click();
+    await expect(page.locator('.redaction-mask')).toHaveCount(before);
+    // Select, reveal, and re-protect one existing detection.
+    const firstSwitch = page.locator('.detections-list').getByRole('switch').first();
+    await firstSwitch.uncheck();
+    await expect(firstSwitch).not.toBeChecked();
+    await firstSwitch.check();
+    await expect(firstSwitch).toBeChecked();
+    await page.getByRole('button', { name: 'Review & export' }).click();
+    await page.locator('.export-paper').waitFor();
+    const save = page.getByRole('button', { name: 'Save clean image' });
+    await expect(save).toBeDisabled();
+    await page.getByLabel('FILE NAME', { exact: true }).fill('safe-story');
+    await page.getByRole('checkbox').check();
+    await expect(save).toBeEnabled();
+    await page.getByLabel('Export size', { exact: true }).selectOption('0.5');
+    await expect(page.getByRole('checkbox')).not.toBeChecked();
+    await page.locator('.export-paper').waitFor();
+    await page.getByRole('checkbox').check();
+    const downloading = page.waitForEvent('download');
+    await save.click();
+    const download = await downloading;
+    expect(download.suggestedFilename()).toBe('safe-story.png');
+    const path = await download.path();
+    expect(path).toBeTruthy();
+    const png = await readFile(path!);
+    expect([...png.subarray(0, 8)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
+    expect(png.readUInt32BE(16)).toBe(360);
+    expect(png.readUInt32BE(20)).toBe(690);
+    await noPageOverflow(page);
+    await testInfo.attach('export', { body: await page.screenshot({ fullPage: true }), contentType: 'image/png' });
+    await testInfo.attach('network-and-workers', { body: JSON.stringify({ network, workers }, null, 2), contentType: 'application/json' });
+    expect(errors).toEqual([]);
+    expect(network.filter(request => /^https?:/.test(request.url) && new URL(request.url).origin !== new URL(page.url()).origin)).toEqual([]);
+    expect(network.filter(request => !['GET', 'HEAD'].includes(request.method))).toEqual([]);
+    // Browsers without OffscreenCanvas use the tested main-thread canvas renderer.
+    const supportsImageWorkers = await page.evaluate(() => typeof Worker !== 'undefined' && typeof OffscreenCanvas !== 'undefined');
+    expect(workers.some(url => /stitch\.worker/.test(url))).toBe(supportsImageWorkers);
+    expect(workers.some(url => /export\.worker/.test(url))).toBe(supportsImageWorkers);
+    expect(workers.some(url => /ocr\/worker\.min\.js/.test(url))).toBe(true);
+    // No root-relative model request is permitted on a project page.
+    expect(network.filter(request => /^https?:/.test(request.url) && /\/ocr\//.test(request.url)).every(request => new URL(request.url).pathname.startsWith('/screenshot-stitch/ocr/'))).toBe(true);
+});
+test('OCR asset failure keeps the real stitch usable for manual redaction', async ({ page, context }) => {
+    await context.route('**/ocr/**', route => route.abort('failed'));
+    await page.goto('/screenshot-stitch/');
+    await upload(page, false);
+    await page.getByRole('button', { name: 'Scan & protect' }).click();
+    await waitForReview(page);
+    await page.getByRole('button', { name: 'Review notes' }).click();
+    await expect(page.locator('.review-warnings')).toContainText(/OCR did not finish|scan could not finish/);
+    await expect(page.locator('.review-warnings')).toContainText(/manual/);
+    await page.getByRole('button', { name: /Add a manual redaction/ }).click();
+    await page.locator('.image-stage').click({ position: { x: 14, y: 14 } });
+    await expect(page.locator('.redaction-mask')).toHaveCount(1);
+});
+test('cancel stops the current processing job without a late screen transition', async ({ page }) => {
+    await page.goto('/');
+    await upload(page);
+    await page.getByRole('button', { name: 'Stitch & protect' }).click();
+    await page.getByRole('button', { name: /Cancel/ }).click();
+    await expect(page.locator('.prepare-page')).toBeVisible();
+    // Give asynchronous worker messages a chance to arrive after cancellation.
+    await page.waitForTimeout(500);
+    await expect(page.locator('.prepare-page')).toBeVisible();
+    await expect(page.locator('.review-page')).toHaveCount(0);
+    await expect(page.locator('.screenshot-item')).toHaveCount(2);
+});
+test('demo uses real stitching, OCR and QR detection instead of seeded masks', async ({ page }, testInfo) => {
+    await page.goto('/screenshot-stitch/');
+    await page.getByRole('button', { name: 'Try the demo', exact: true }).click();
+    await waitForReview(page);
+    await expect(page.locator('.detection-select strong').filter({ hasText: 'Email address' }).first()).toBeVisible();
+    await expect(page.locator('.detection-select strong').filter({ hasText: 'QR / barcode' }).first()).toBeVisible();
+    await expect(page.locator('.original-image')).toHaveJSProperty('naturalWidth', 780);
+    const height = await page.locator('.original-image').evaluate((image: HTMLImageElement) => image.naturalHeight);
+    expect(height).toBeGreaterThan(2000);
+    expect(height).toBeLessThan(2500);
+    await page.getByRole('button', { name: /Adjust seams|seam.*to review/ }).click();
+    await expect(page.getByRole('dialog')).toContainText('resets existing mask edits');
+    await expect(page.getByRole('group', { name: 'Choose a seam' }).getByRole('button')).toHaveCount(2);
+    await page.getByLabel('OVERLAP', { exact: true }).fill('225');
+    await expect(page.getByLabel('OVERLAP', { exact: true })).toHaveValue('225');
+    await page.getByRole('button', { name: 'Use automatic values' }).click();
+    await expect(page.getByLabel('OVERLAP', { exact: true })).not.toHaveValue('225');
+    await noPageOverflow(page);
+    await testInfo.attach('seam-editor', { body: await page.screenshot(), contentType: 'image/png' });
+});

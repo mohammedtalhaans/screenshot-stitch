@@ -1,0 +1,48 @@
+{
+  "release": "1.1.0",
+  "verified_at_utc": "2026-09-12T06:42:40.416992+00:00",
+  "clean_install": "npm ci passed",
+  "typescript": "passed",
+  "vitest": {
+    "passed": 90,
+    "failed": 0
+  },
+  "playwright": {
+    "startTime": "2026-09-12T06:34:53.287Z",
+    "duration": 212879.003,
+    "expected": 30,
+    "skipped": 0,
+    "unexpected": 0,
+    "flaky": 0
+  },
+  "browser_profiles": [
+    "desktop Chromium",
+    "Pixel 7 mobile Chromium emulation",
+    "iPhone 13 mobile WebKit emulation"
+  ],
+  "pixel_worker_invariants_per_profile": 28,
+  "accessibility": {
+    "screens_per_profile": 8,
+    "profiles": 3,
+    "violations": 0
+  },
+  "npm_audit": {
+    "info": 0,
+    "low": 0,
+    "moderate": 0,
+    "high": 0,
+    "critical": 0,
+    "total": 0
+  },
+  "production_build": "passed",
+  "screenshots": {
+    "desktop": 20,
+    "mobile": 20,
+    "source": "Actual production app, synthetic demo inputs; local asset delivery delayed only for processing captures"
+  },
+  "limitations": [
+    "Physical phones and OS clipboard/share prompts not verified",
+    "No GitHub repository supplied; Pages project-prefix hosting tested, not published",
+    "Automatic detection is fallible. Always review; use solid masks for secrets."
+  ]
+}

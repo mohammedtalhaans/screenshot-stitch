@@ -1,0 +1,17 @@
+{
+  "version": "1.2.0",
+  "date": "2026-09-12",
+  "typecheck": "passed",
+  "build": "passed",
+  "vitest": 90,
+  "browserScenarios": 60,
+  "method": "full-suite runs plus focused reruns after corrections",
+  "profiles": [
+    "chromium",
+    "mobile-chromium",
+    "webkit"
+  ],
+  "finalSessionChecks": 3,
+  "captures": 12,
+  "deployment": "prepared, not published"
+}
